@@ -6,6 +6,7 @@
 
 - **[docs/EXPLAINER.md](docs/EXPLAINER.md)** — なにこれ / なぜ / しくみ（予備知識ゼロで読める解説）
 - **[docs/USAGE.md](docs/USAGE.md)** — 使い方・手順・テンプレ（自分のコードの改善候補を厳密に採否する）
+- **[docs/RSI-LIMITS.md](docs/RSI-LIMITS.md)** — 「自律的な再帰的自己改善（RSI）は実現できる？」→ いいえ・その理由（封じ込めであって実現ではない）
 - **[skeleton/](skeleton/)** — 実際に動く実装（任意ターゲット × 実候補ファイルを採否できる）
 
 ## 中身

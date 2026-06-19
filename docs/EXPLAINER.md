@@ -133,10 +133,14 @@ confirm を毎回同じデータで叩き続けると、そのデータにも過
 最後の天井（計測捏造の境界・データ枯渇）は**外部に委ねる**と正直に書いてあります。
 それが `test_security.py` などにテストとして固定されています。
 
+→ 「**これで自律的な再帰的自己改善（RSI）は実現できるのか？**」への踏み込んだ答えは
+[RSI-LIMITS.md](RSI-LIMITS.md)（結論: いいえ＝実現でなく封じ込め）。
+
 ---
 
 ## 7. もっと知る
 
+- **「自律的な再帰的自己改善（RSI）は実現できる？」→ いいえ・その理由** → [RSI-LIMITS.md](RSI-LIMITS.md)
 - 使い方・手順・テンプレ → [USAGE.md](USAGE.md)
 - 歩く骨組みの詳細 → [`skeleton/README.md`](../skeleton/README.md)
 - 設計の全体像 → [`DESIGN.md`](../DESIGN.md) / 天井の地図 → [`DESIGN-SUPPLEMENT-v2.md`](../DESIGN-SUPPLEMENT-v2.md)
