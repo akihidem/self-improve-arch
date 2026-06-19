@@ -64,6 +64,9 @@ builder → slate(K 候補) ─┬─ [search workload] 各候補:
 - **KB**（`kb.py`）は sqlite。slate の全候補と confirm holdout の消費（`holdouts` 表）、
   昇格履歴（`promotions` 表）を記録（採用フラグは confirm 込みの最終採否、予算消費は run を
   越えて永続）。`--kb-path` で差替可。
+- **bridge**（`bridge.py`）は **rinne(生成) → self-improve-arch(採否+昇格)** を1本に繋ぐ正系の連結。
+  rinne の implFile 出力（`<module>.py` 全文）は候補規約と同形なので、そのまま候補スレートに流せる。
+  rinne=「正しく作る」/ self-improve-arch=「厳密に採否し本番手前まで昇格」と責務分離（採否側に LLM は不在）。
 - **promote**（`promote.py`）は採用された勝者を baseline へ昇格し**ループを閉じる**（recurse の
   champion 差し替え相当）。`--apply` で Ring を切替: `staging`（既定・Ring-1 安全＝live baseline を
   触らず `<module>.promoted.py` に提案。prod 適用は人間/CI ＝ DESIGN「AI は prod を直接変更しない」）
