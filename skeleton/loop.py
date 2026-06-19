@@ -83,6 +83,7 @@ class CycleOutcome:
     confirm_seed: int | None  # 使用した confirm holdout slice（枯渇 / winner 無は None）
     exhausted: bool       # winner はいたが query-budget 枯渇で confirm できなかった
     adopted: bool         # = winner 選択 AND confirmed
+    winner_source: str | None = None  # 採用時の勝者ソース（promote が baseline へ昇格する）
 
 
 @dataclass
@@ -216,6 +217,9 @@ def run_one_cycle(builder, reviewers: list, judge, kb: KnowledgeBase,
             confirm_reasons = cr.reasons
 
     adopted = sel is not None and confirmed
+    # 採用時のみ勝者ソースを取り出す（promote.py が baseline へ昇格＝ループを閉じる）。
+    winner_source = (next(c.source for c in slate if c.name == sel.name)
+                     if adopted else None)
 
     # slate の全候補を KB に記録。採用フラグは最終採否。winner が confirm 落ち/枯渇なら
     # なぜ search 通過でも不採用かを reason に残す。
@@ -252,4 +256,5 @@ def run_one_cycle(builder, reviewers: list, judge, kb: KnowledgeBase,
         confirm_seed=confirm_seed,
         exhausted=exhausted,
         adopted=adopted,
+        winner_source=winner_source,
     )

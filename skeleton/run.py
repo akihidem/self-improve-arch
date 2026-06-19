@@ -43,6 +43,7 @@ from budget import ConfirmBudget
 from builder import BuilderDir, make_builder
 from kb import KnowledgeBase
 from loop import _CONFIRM_SEEDS, run_one_cycle
+from promote import PROMOTE_MODES, promote_winner
 from review import Judge, make_reviewers
 from sandbox import DEDUPE_TASK, Task, infer_baseline_params
 
@@ -75,6 +76,9 @@ def main() -> int:
                     help="confirm holdout 1 slice あたりの query 上限（KB 永続）")
     ap.add_argument("--cycles", type=int, default=3, help="実候補一括採否なら 1 を推奨")
     ap.add_argument("--kb-path", default=DEFAULT_KB)
+    ap.add_argument("--apply", choices=list(PROMOTE_MODES), default="staging",
+                    help="採用された勝者の昇格先。staging=<module>.promoted.py に提案（既定・prod 直書きしない）"
+                         " / baseline=live baseline を上書き（退避つき・隔離環境のみ）/ none=決定のみ")
     a = ap.parse_args()
 
     # task: --target-dir を渡せば任意ターゲット。省略時は同梱 dedupe（後方互換）。
@@ -145,6 +149,15 @@ def main() -> int:
         if out.adopted:
             print(f"  => 採用: {out.winner}（search 最良 → confirm 再現）")
             adopted_count += 1
+            # ループを閉じる: 採用された勝者を baseline へ昇格（Ring 規律は --apply で切替）。
+            if a.apply != "none" and out.winner_source is not None:
+                pr = promote_winner(task, out.winner, out.winner_source, mode=a.apply,
+                                    primary_rel=out.confirm_detail.get(task.primary, {}).get("rel", 0.0),
+                                    confirm_seed=out.confirm_seed, kb=kb)
+                if pr.mode == "staging":
+                    print(f"  => 昇格(staging): 提案を {pr.path} に書込（live baseline 不変・prod適用は人間/CI）")
+                elif pr.mode == "baseline":
+                    print(f"  => 昇格(baseline): {pr.from_sha or '∅'}→{pr.to_sha} に差替（退避 {pr.backup}）")
         elif out.exhausted:
             print(f"  => 不採用（{out.winner} は holdout 枯渇で確証できず）")
         elif out.winner is not None:
@@ -161,6 +174,12 @@ def main() -> int:
     print("KB 最新:")
     for row in kb.recent(limit=20):
         print("  ", row)
+    proms = kb.promotions(limit=10)
+    if proms:
+        print("昇格履歴（ループを閉じた記録）:")
+        for p in proms:
+            print(f"   [{p['mode']}] {p['module']}: {p['from_sha'] or '∅'}→{p['to_sha']} "
+                  f"rel={p['primary_rel']} seed={p['confirm_seed']}")
     return 0
 
 

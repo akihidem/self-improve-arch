@@ -8,3 +8,7 @@ __pycache__/
 *.sqlite
 *.sqlite3
 kb.sqlite
+
+# 昇格の成果物（run.py --apply staging|baseline）。デモで生成されるが正本ではない
+*.promoted.py
+*.bak.*.py

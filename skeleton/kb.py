@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS decisions(
 CREATE TABLE IF NOT EXISTS artifacts(sha TEXT PRIMARY KEY, body TEXT);
 CREATE TABLE IF NOT EXISTS holdouts(
   seed INTEGER PRIMARY KEY, query_budget INTEGER, queries_spent INTEGER);
+CREATE TABLE IF NOT EXISTS promotions(
+  id INTEGER PRIMARY KEY, module TEXT, from_sha TEXT, to_sha TEXT,
+  primary_rel REAL, confirm_seed INTEGER, mode TEXT, path TEXT, created REAL);
 """
 
 
@@ -96,6 +99,30 @@ class KnowledgeBase:
         )
         self.cx.commit()
         return True
+
+    def record_promotion(self, *, module: str, from_sha: str, to_sha: str,
+                         primary_rel: float, confirm_seed: int | None,
+                         mode: str, path: str) -> int:
+        """昇格（baseline 差し替え/staging 提案）を監査記録する。from→to の sha で追跡可能。"""
+        cur = self.cx.execute(
+            "INSERT INTO promotions(module, from_sha, to_sha, primary_rel, "
+            "confirm_seed, mode, path, created) VALUES(?,?,?,?,?,?,?,?)",
+            (module, from_sha, to_sha, primary_rel, confirm_seed, mode, path, time.time()),
+        )
+        self.cx.commit()
+        return cur.lastrowid
+
+    def promotions(self, limit: int = 10) -> list:
+        """昇格履歴（表示・テスト用・新しい順）。"""
+        cur = self.cx.execute(
+            "SELECT module, from_sha, to_sha, primary_rel, confirm_seed, mode, path "
+            "FROM promotions ORDER BY id DESC LIMIT ?", (limit,),
+        )
+        return [
+            {"module": m, "from_sha": f, "to_sha": t, "primary_rel": r,
+             "confirm_seed": cs, "mode": mode, "path": p}
+            for m, f, t, r, cs, mode, p in cur.fetchall()
+        ]
 
     def holdout_rows(self) -> list:
         """holdout の消費状況（表示・テスト用）。"""

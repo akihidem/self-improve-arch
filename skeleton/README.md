@@ -61,8 +61,14 @@ builder → slate(K 候補) ─┬─ [search workload] 各候補:
   query-budget から confirm holdout を取り（`budget.ConfirmBudget.spend`）、その winner を
   **fresh confirm slice で再確証**（`confirm_winner`・単一比較 full α）。**1 サイクル最大 1 採用**で、
   confirm を通ったものだけ採用する。全 holdout 枯渇なら confirm 不可＝採用停止。
-- **KB**（`kb.py`）は sqlite。slate の全候補と confirm holdout の消費（`holdouts` 表）を
-  記録（採用フラグは confirm 込みの最終採否、予算消費は run を越えて永続）。`--kb-path` で差替可。
+- **KB**（`kb.py`）は sqlite。slate の全候補と confirm holdout の消費（`holdouts` 表）、
+  昇格履歴（`promotions` 表）を記録（採用フラグは confirm 込みの最終採否、予算消費は run を
+  越えて永続）。`--kb-path` で差替可。
+- **promote**（`promote.py`）は採用された勝者を baseline へ昇格し**ループを閉じる**（recurse の
+  champion 差し替え相当）。`--apply` で Ring を切替: `staging`（既定・Ring-1 安全＝live baseline を
+  触らず `<module>.promoted.py` に提案。prod 適用は人間/CI ＝ DESIGN「AI は prod を直接変更しない」）
+  / `baseline`（退避つきで live baseline を上書き・隔離環境の連続改善用）/ `none`（決定のみ）。
+  昇格すると次サイクルは**改善後 baseline の上で再評価**するので、無駄な再採用が出ない＝連続自己改善。
 
 ## 多様性・確証・予算（slate / temperature / 多重比較補正 / fresh confirm / query-budget）
 
