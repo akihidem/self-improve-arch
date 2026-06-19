@@ -32,5 +32,5 @@
 
 —
 
-private / 設計記録 + 動く実装（`skeleton/`）。本番適用（OS 分離・実 LLM builder の実走）は別レイヤで対象外。
+設計記録 + 動く実装（`skeleton/`）。本番適用（OS 分離・実 LLM builder の実走）は別レイヤで対象外。
 **信頼できない候補を流すときは OS 分離の中で**（`docs/USAGE.md` 安全境界）。
