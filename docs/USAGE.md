@@ -192,9 +192,21 @@ $V run.py --target-dir mytarget --module mymod --symbol myfn \
 **候補は untrusted コードとして実際に実行されます。** AST 検査はセキュリティ境界では
 **ありません**（reflective access で回避でき、計測捏造も原理的には可能）。
 
-> **信頼できない候補（未検証の LLM 出力など）を流すときは、必ず OS 分離
-> （seccomp / namespace / コンテナ / k8s）の中で実行してください。**
-> このローカル実行に OS サンドボックスはありません。
+実行は **`--isolation` バックエンド**の下で行われます（既定 `rlimit`＝非特権で効く DoS 床）。
+
+| backend | 隔離内容 | network |
+|---|---|---|
+| `docker` | netns + cgroup + readonly + 非root ＝ 真の OS 境界 | **遮断（--network none）** |
+| `systemd` | cgroup 資源上限（MemoryMax/CPUQuota/TasksMax） | 非隔離 |
+| `rlimit`（既定） | setrlimit（AS/CPU/NPROC/FSIZE）＝ DoS 床 | 非隔離 |
+| `none` | 隔離なし（信頼候補のみ・明示時） | 非隔離 |
+
+`--isolation auto` は利用可能な最強（docker>rlimit）を自動選択。`--mem-mb` / `--cpu-s` で上限調整。
+
+> **真に信頼できない候補の network exfiltration まで止めるのは `--isolation docker` だけ**です。
+> docker 不可の環境では、外側の OS/コンテナ分離の中で `run.py` を実行してください。rlimit/systemd は
+> 資源暴走（DoS）は止めますが network は隔離しません（残る天井）。なお OS 分離は**計測値の捏造そのもの**
+> （候補が偽の timing を返す）は塞ぎません＝候補が触れない外部計測が要る別問題です。
 
 詳細と実証は [`skeleton/sandbox.py`](../skeleton/sandbox.py) の「信頼境界」と
 [`skeleton/test_security.py`](../skeleton/test_security.py)。
@@ -212,4 +224,4 @@ $V run.py --target-dir mytarget --module mymod --symbol myfn \
    python3 run.py --target-dir mytarget --module myfunc --symbol myfunc \
                   --candidates-dir mycands --cycles 1 --kb-path /tmp/kb.sqlite
    ```
-6. （信頼できない候補なら）5 を OS 分離の中で実行。
+6. （信頼できない候補なら）`--isolation docker` を付ける（docker 不可なら外側の OS 分離の中で 5 を実行）。

@@ -28,9 +28,10 @@ Bonferroni（alpha/K）で多重比較補正し、valid な最良を選び、探
 mock/cli-run は同梱デモ用。cli-run（claude-cli-run）は wiring のみで自動実行では選ばない（claude-in-claude 回避）。
 
 **安全境界（重要）**: 候補は untrusted コードとして実行される。AST 検査はセキュリティ境界ではない
-（sandbox.py 参照）。**信頼できない候補を流す場合は OS 分離（seccomp/namespace/k8s）の中で実行すること。**
-このローカル実行に OS サンドボックスは無い。`--allow-imports` は候補に追加 import を許す＝候補を更に信頼
-する操作なので、信頼できる候補にのみ使うこと。
+（sandbox.py 参照）。実行は `--isolation` の OS 隔離下で行う（既定 rlimit=非特権の DoS 床）。**真に
+信頼できない候補の network exfiltration まで止めるのは `--isolation docker`（--network none）だけ**で、
+rlimit/systemd は資源上限のみ（network 非隔離）。docker 不可の環境では OS/コンテナ分離を外側で用意すること。
+`--allow-imports` は候補に追加 import を許す＝候補を更に信頼する操作なので、信頼できる候補にのみ使うこと。
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from pathlib import Path
 
 from budget import ConfirmBudget
 from builder import BuilderDir, make_builder
+from isolation import detect_backend, isolation_note
 from kb import KnowledgeBase
 from loop import _CONFIRM_SEEDS, run_one_cycle
 from promote import PROMOTE_MODES, promote_winner
@@ -69,6 +71,12 @@ def main() -> int:
                     help="テスト/ベンチ subprocess の python（プロジェクトの venv 指定）。省略時は実行中の python")
     ap.add_argument("--allow-imports", default=None,
                     help="候補に許可する import の top-module（カンマ区切り。例 numpy,scipy）。信頼候補のみ")
+    ap.add_argument("--isolation", choices=["auto", "docker", "systemd", "rlimit", "none"],
+                    default="rlimit",
+                    help="候補実行の OS 隔離 backend。auto=最強自動 / docker=真の OS+network 境界 / "
+                         "rlimit=非特権 DoS 床（既定）/ systemd=cgroup / none=隔離なし（信頼候補のみ）")
+    ap.add_argument("--mem-mb", type=int, default=1024, help="隔離時のメモリ上限（MB）")
+    ap.add_argument("--cpu-s", type=int, default=120, help="隔離時の CPU 秒上限")
     ap.add_argument("--reps", type=int, default=31)
     ap.add_argument("--slate-size", type=int, default=0, help="0=全候補（BuilderDir）。mock は固定 slate")
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -89,7 +97,8 @@ def main() -> int:
         task = DEDUPE_TASK
     # CLI 由来の実行設定を注入（python / 許可 import）。
     allowed = ("__future__",) + tuple(m.strip() for m in (a.allow_imports or "").split(",") if m.strip())
-    task = replace(task, python_exe=(a.python or ""), allowed_imports=allowed)
+    task = replace(task, python_exe=(a.python or ""), allowed_imports=allowed,
+                   isolation=a.isolation, mem_mb=a.mem_mb, cpu_s=a.cpu_s)
     # baseline_params: 明示 > baseline シグネチャからの自動推論 > 既定。
     if a.baseline_params:
         bparams = tuple(p.strip() for p in a.baseline_params.split(",") if p.strip())
@@ -114,6 +123,8 @@ def main() -> int:
     print(f"builder={builder_label} reviewers={a.reviewers} "
           f"target={task.module}:{task.symbol} primary={task.primary} "
           f"cycles={a.cycles} confirm_budget={a.confirm_budget}/slice kb={a.kb_path}")
+    _iso = detect_backend() if task.isolation == "auto" else task.isolation
+    print(f"隔離: 指定={task.isolation} 実効={_iso}（mem={task.mem_mb}MB cpu={task.cpu_s}s）— {isolation_note(_iso)}")
     print(f"証明: 採否は実テスト + 実ベンチ ({task.primary} の有意差) が床。Reviewer/Judge は必要条件。"
           f"複数提案は Bonferroni 補正し最良を選び fresh confirm slice で再確証。query-budget 枯渇で停止。\n")
 

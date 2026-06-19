@@ -32,5 +32,5 @@
 
 —
 
-設計記録 + 動く実装（`skeleton/`）。本番適用（OS 分離・実 LLM builder の実走）は別レイヤで対象外。
-**信頼できない候補を流すときは OS 分離の中で**（`docs/USAGE.md` 安全境界）。
+設計記録 + 動く実装（`skeleton/`）。候補実行の **OS 分離（`--isolation`）** と **実 LLM builder/reviewer の cli-run 実走** は実装・実証済み。
+**信頼できない候補は `--isolation docker`（`--network none`）の中で**実行する（docker 不可なら外側の OS/コンテナ分離。rlimit/systemd は資源上限のみで network 非隔離。`docs/USAGE.md` 安全境界）。

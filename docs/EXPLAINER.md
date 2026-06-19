@@ -99,9 +99,13 @@ confirm を毎回同じデータで叩き続けると、そのデータにも過
 - 防御として、計測器を候補ロード前に**束縛退避**し、ベンチ出力長を照合します。
 - **ただしこれは“境界”ではありません。** Python では reflective に任意コードへ到達でき、
   `os._exit` や gc 操作で結局 forge できます（実際にデモで確認済み）。
-- **本当の床は OS 分離（seccomp/namespace/k8s）**で、このローカル実行には**ありません**。
+- **OS 分離は `--isolation` で実装しました**（既定 rlimit=非特権の DoS 床、`--isolation docker`
+  で `--network none`＝候補の network exfiltration / DoS / FS 逸脱を断つ）。ただし**計測値そのものの
+  捏造**（sandbox 内で候補が偽の timing を返す）は OS 分離では塞げない別問題で、候補が触れない
+  外部計測が要る（残る天井・N 照合は部分緩和）。
 
-→ だから「**信頼できない候補は OS 分離の中で動かす**」が運用の鉄則です（[USAGE.md](USAGE.md) 安全境界）。
+→ 運用の鉄則は「**信頼できない候補は `--isolation docker`（不可なら外側のコンテナ/OS 分離）で
+動かす**」です（[USAGE.md](USAGE.md) 安全境界）。
 
 ---
 

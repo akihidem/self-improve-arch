@@ -38,13 +38,13 @@ import ast
 import json
 import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from gate import Metric
+from isolation import Limits, run_isolated
 
 # 本物の改善対象。読み取り専用でコピー元にするだけ（mutate 禁止）。
 TARGET_DIR = Path(__file__).resolve().parent / "target"
@@ -83,6 +83,9 @@ class Task:
     baseline_params: tuple = ("items",)   # baseline 関数の引数名（scope reviewer の契約判定用）
     python_exe: str = ""                   # テスト/ベンチ subprocess の python（空=sys.executable）。venv 指定用
     allowed_imports: tuple = ("__future__",)  # 候補に許可する import の top-module（信頼候補で numpy 等を許可）
+    isolation: str = "rlimit"              # 候補実行の OS 隔離 backend（auto|docker|systemd|rlimit|none）
+    mem_mb: int = 1024                     # 隔離時のメモリ上限（MB）
+    cpu_s: int = 120                       # 隔離時の CPU 秒上限
 
 
 # 既定タスク = 同梱の dedupe（後方互換: task 省略時はこれ）。
@@ -214,7 +217,9 @@ def _run_bench_interleaved(work_dir: Path, base_impl: Path,
                            cand_impl: Path, reps: int,
                            seed: int = 1234,
                            symbol: str = "dedupe_preserve_order",
-                           python_exe: str = "") -> tuple[list, list]:
+                           python_exe: str = "", *,
+                           isolation: str = "rlimit",
+                           limits: Limits = Limits()) -> tuple[list, list]:
     """同一プロセス内で baseline/candidate を交互計測し (base_timings, cand_timings)。
 
     work_dir は bench.py を import できるディレクトリ（baseline のコピーで可）。
@@ -224,9 +229,9 @@ def _run_bench_interleaved(work_dir: Path, base_impl: Path,
     code = _BENCH_RUNNER.format(
         base=str(base_impl), cand=str(cand_impl), reps=reps, seed=seed, symbol=symbol
     )
-    proc = subprocess.run(
+    proc = run_isolated(
         [python_exe or sys.executable, "-c", code],
-        cwd=str(work_dir), capture_output=True, text=True, timeout=300,
+        cwd=str(work_dir), timeout=300, backend=isolation, limits=limits,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"bench 失敗: {proc.stderr.strip()[:300]}")
@@ -235,11 +240,12 @@ def _run_bench_interleaved(work_dir: Path, base_impl: Path,
 
 
 def _run_tests(work_dir: Path, test_file: str = "test_dedupe.py",
-               python_exe: str = "") -> tuple[bool, str]:
-    """work_dir 内で pytest を実行。(passed, output 末尾) を返す。python_exe 空なら sys.executable。"""
-    proc = subprocess.run(
-        [python_exe or sys.executable, "-m", "pytest", "-q", test_file],
-        cwd=str(work_dir), capture_output=True, text=True, timeout=300,
+               python_exe: str = "", *, isolation: str = "rlimit",
+               limits: Limits = Limits()) -> tuple[bool, str]:
+    """work_dir 内で pytest を OS 隔離下で実行。(passed, output 末尾)。python_exe 空なら sys.executable。"""
+    proc = run_isolated(
+        [python_exe or sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test_file],
+        cwd=str(work_dir), timeout=300, backend=isolation, limits=limits,
     )
     out = (proc.stdout + proc.stderr)[-1200:]
     return proc.returncode == 0, out
@@ -307,13 +313,17 @@ def evaluate_candidate(candidate_source: str, task: Task = DEDUPE_TASK, *,
         # candidate 側だけ <module>.py を候補で上書き（本物 target_dir は不変）
         (cand_dir / impl_name).write_text(candidate_source, encoding="utf-8")
 
-        # --- 実テスト（候補に対して）---
-        tests_passed, test_out = _run_tests(cand_dir, test_name, task.python_exe)
+        limits = Limits(mem_mb=task.mem_mb, cpu_s=task.cpu_s)
 
-        # --- 実ベンチ（同一プロセスで baseline/candidate を交互計測）---
+        # --- 実テスト（候補に対して・OS 隔離下）---
+        tests_passed, test_out = _run_tests(cand_dir, test_name, task.python_exe,
+                                            isolation=task.isolation, limits=limits)
+
+        # --- 実ベンチ（同一プロセスで baseline/candidate を交互計測・OS 隔離下）---
         base_t, cand_t = _run_bench_interleaved(
             base_dir, base_dir / impl_name, cand_dir / impl_name, reps,
             seed=workload_seed, symbol=task.symbol, python_exe=task.python_exe,
+            isolation=task.isolation, limits=limits,
         )
 
         # bench 出力長を reps と照合（N 偽装の遮断）。len 不一致は捏造/破損として棄却し、
