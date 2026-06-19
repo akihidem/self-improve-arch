@@ -143,16 +143,17 @@ def evaluate_one(candidate, reviewers: list, judge, n_comparisons: int,
     )
 
 
-def _select_winner(results: list):
+def _select_winner(results: list, higher_is_better: bool = False):
     """gate を通った候補から主要KPI 改善が最大の 1 つを選ぶ（無ければ None）。
 
-    PRIMARY=latency は lower-is-better なので primary_rel が最も負（最大改善）を採る。
-    1 サイクルで採用するのは最大 1 候補（同じ関数の別書き換えを複数採用しない）。
+    改善方向に依存する: lower-is-better（latency 等）は primary_rel が最も負＝最良、
+    higher-is-better（Sharpe/AUC 等）は primary_rel が最も正＝最良。1 サイクル最大 1 採用。
     """
     valid = [r for r in results if r.adopt]
     if not valid:
         return None
-    return min(valid, key=lambda r: r.primary_rel)
+    return max(valid, key=lambda r: r.primary_rel) if higher_is_better \
+        else min(valid, key=lambda r: r.primary_rel)
 
 
 def confirm_winner(candidate, judge_approved: bool,
@@ -192,7 +193,7 @@ def run_one_cycle(builder, reviewers: list, judge, kb: KnowledgeBase,
 
     # --- search: slate を search workload で評価し valid 最良を選ぶ ---
     results = [evaluate_one(c, reviewers, judge, n, task) for c in slate]
-    sel = _select_winner(results)
+    sel = _select_winner(results, task.higher_is_better)
 
     # --- confirm: winner を query-budget 内の fresh slice で再確証 ---
     #     全 slice 枯渇（spend()=None）なら confirm 不可＝採用を止める（黙って overfit しない）。

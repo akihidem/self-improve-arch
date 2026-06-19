@@ -59,6 +59,14 @@ def test_select_winner_picks_best_valid():
     assert winner is not None and winner.name == "b"
 
 
+def test_select_winner_higher_is_better_picks_max():
+    # higher-is-better（Sharpe/AUC 等）は primary_rel が最大の valid を選ぶ。
+    # c は rel 最大(2.0)だが gate 不通過なので対象外 → 残る a(0.9)/b(1.5) から b。
+    results = [_cr("a", True, 0.9), _cr("b", True, 1.5), _cr("c", False, 2.0)]
+    winner = _select_winner(results, higher_is_better=True)
+    assert winner is not None and winner.name == "b"
+
+
 def test_select_winner_none_when_no_valid():
     results = [_cr("x", False, -0.9), _cr("y", False, -0.8)]
     assert _select_winner(results) is None
