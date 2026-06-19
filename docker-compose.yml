@@ -1,0 +1,59 @@
+# 自己改善プラットフォームのローカル構成（説明用）。
+# 本番ではない。本番(prod)は AI が触れない別系統に置く。
+services:
+
+  # --- Knowledge Base（構造化: 実験・判定グラフ） ---
+  kb-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: kb
+      POSTGRES_USER: kb
+      POSTGRES_PASSWORD: ${KB_PASSWORD:?set in .env}   # シークレットは .env から
+    volumes: ["kbdata:/var/lib/postgresql/data"]
+    networks: [platform]
+
+  # --- 成果物ストア（content-addressed: diff / ログ / モデルI/O） ---
+  artifacts-minio:
+    image: minio/minio
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?set in .env}
+    volumes: ["miniodata:/data"]
+    networks: [platform]
+
+  # --- ベクトル検索（過去提案の意味的参照: RAG） ---
+  kb-qdrant:
+    image: qdrant/qdrant
+    volumes: ["qdrantdata:/qdrant/storage"]
+    networks: [platform]
+
+  # --- 統合AI / Improvement Controller ---
+  controller:
+    build: { context: ., dockerfile: Dockerfile.controller }
+    environment:
+      KB_DSN: postgresql://kb:${KB_PASSWORD}@kb-postgres:5432/kb
+      QDRANT_URL: http://kb-qdrant:6333
+      ARTIFACTS_URL: http://artifacts-minio:9000
+      # LLM キー等は外部シークレット管理から注入（compose では参照のみ）
+      LLM_API_KEY: ${LLM_API_KEY:?set in .env}
+    depends_on: [kb-postgres, kb-qdrant, artifacts-minio]
+    networks: [platform, sandbox]   # platform(KB) と sandbox に到達可。prod へは不可。
+
+  # --- Sandbox 上の被検証 Web サービス（実験対象） ---
+  sandbox-web:
+    build: { context: ./sandbox_app }
+    environment:
+      ENV: sandbox            # prod 資格情報は一切持たせない
+    networks: [sandbox]       # sandbox ネットワークに隔離（egress 制限は K8s 側で）
+    # 本番DBや本番APIキーはマウントしない。合成データ/匿名化トラフィックのみ。
+
+networks:
+  platform: {}
+  sandbox:
+    internal: true            # 外部 egress を遮断（DNS/外部APIへ出さない）
+
+volumes:
+  kbdata: {}
+  miniodata: {}
+  qdrantdata: {}

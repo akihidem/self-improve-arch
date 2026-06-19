@@ -1,0 +1,20 @@
+# 各改善案の KPI 実験（候補 vs baseline）。ephemeral・並列・リソース制限つき。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: kpi-experiment-
+  namespace: sandbox
+spec:
+  ttlSecondsAfterFinished: 3600   # 終了後に自動 GC
+  activeDeadlineSeconds: 1800      # 暴走防止のタイムアウト
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: experiment
+          image: registry.example.com/kpi-runner:latest
+          args: ["--candidate", "$(CANDIDATE_REF)", "--baseline", "$(BASELINE_REF)"]
+          resources:
+            requests: { cpu: "1", memory: "2Gi" }
+            limits: { cpu: "2", memory: "2Gi" }

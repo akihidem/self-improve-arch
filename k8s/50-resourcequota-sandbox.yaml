@@ -1,0 +1,11 @@
+# sandbox 全体の資源上限（コスト暴走防止 / 並列数の物理的キャップ）。
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: sandbox-quota, namespace: sandbox }
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    count/jobs.batch: "10"      # 同時実験数の上限

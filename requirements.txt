@@ -1,0 +1,6 @@
+# improvement_loop_example.py 自体は標準ライブラリのみで動く（追加依存なし）。
+# 以下は本番形（Docker controller）で想定する依存の例。
+psycopg[binary]>=3.1     # Postgres (Knowledge Base)
+qdrant-client>=1.7       # ベクトル検索（過去提案の意味的参照）
+boto3>=1.34              # S3/MinIO 成果物ストア
+pyyaml>=6.0

@@ -1,0 +1,15 @@
+# sandbox の egress を遮断（prod・外部APIへ出さない）。
+# 許可するのは platform 内の KB と DNS のみ。Goodhart/データ流出/横展開の抑止。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: deny-egress-except-kb, namespace: sandbox }
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: platform } }
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }   # DNS のみ

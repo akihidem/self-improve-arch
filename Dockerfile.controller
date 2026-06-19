@@ -1,0 +1,15 @@
+# Improvement Controller（統合AI）コンテナ
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# 非 root 実行（権限最小化）
+RUN useradd -m runner
+USER runner
+
+# シークレットは ENV/Secret 経由で注入。イメージに焼き込まない。
+ENTRYPOINT ["python", "-m", "controller"]

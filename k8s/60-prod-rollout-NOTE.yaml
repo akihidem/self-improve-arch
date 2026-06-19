@@ -1,0 +1,16 @@
+# 【本番昇格は AI の責務外】参考: prod canary は GitOps + 人間承認で行う。
+# 例として Argo Rollouts。AI はこの manifest の prod ブランチに書き込めない。
+# AnalysisTemplate でガードレールを監視し、違反時に自動ロールバック。
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: { name: web-service, namespace: prod }
+spec:
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5
+        - pause: { duration: 10m }
+        - analysis: { templates: [{ templateName: guardrails }] }  # error_rate/p99 監視
+        - setWeight: 50
+        - pause: { duration: 30m }
+        - setWeight: 100

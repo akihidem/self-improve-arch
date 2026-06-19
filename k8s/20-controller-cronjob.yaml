@@ -1,0 +1,27 @@
+# 改善サイクルを定期起動（または queue 駆動の Deployment でも可）。
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: improvement-controller, namespace: platform }
+spec:
+  schedule: "0 */6 * * *"        # 6 時間ごと
+  concurrencyPolicy: Forbid       # サイクルの多重起動を禁止
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: improvement-controller
+          restartPolicy: Never
+          containers:
+            - name: controller
+              image: registry.example.com/improvement-controller:latest
+              env:
+                - name: KB_DSN
+                  valueFrom: { secretKeyRef: { name: kb-dsn, key: dsn } }
+                - name: LLM_API_KEY
+                  valueFrom: { secretKeyRef: { name: llm, key: api_key } }
+                - name: MAX_PARALLEL_EXPERIMENTS
+                  value: "3"
+              resources:
+                requests: { cpu: "500m", memory: "1Gi" }
+                limits: { cpu: "2", memory: "4Gi" }

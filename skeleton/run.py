@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""CLI: self-improvement ループを N サイクル回す（任意ターゲット・実候補対応）。
+
+  # 同梱 dedupe を mock 候補でデモ
+  python run.py --builder mock --reviewers mock --cycles 3
+
+  # 自分のターゲット × 自分の候補ファイル群を full rigor で採否（実運用）
+  python run.py --target-dir DIR --module MOD --symbol FN --primary KPI \
+                --candidates-dir CANDS --cycles 1 --kb-path /tmp/kb.sqlite
+
+1 サイクルで候補 slate を生成し、各候補を sandbox+Reviewer+Judge+gate で評価する。gate は
+Bonferroni（alpha/K）で多重比較補正し、valid な最良を選び、探索に未使用の fresh confirm slice で
+再確証できたものだけ採用する。confirm holdout には query-budget（slice あたり B 回・KB 永続）を課し、
+全 slice 枯渇したら採用を止める。各候補の採否・実測値・Reviewer blocking・confirm 結果・winner を出力。
+
+ターゲット規約: --target-dir に `<module>.py`（<symbol> を定義）/ `test_<module>.py`（pytest）/
+`bench.py`（make_workload(seed) と measure_interleaved(base_fn, cand_fn, data, reps) を <symbol>
+前提で提供）。候補は `<module>.py` 全文を差し替えるソース。
+
+候補の出どころ: --candidates-dir のファイル群（BuilderDir）。手書き / 別途 LLM 出力 / 過去案いずれも可。
+mock/cli-run は同梱デモ用。cli-run（claude-cli-run）は wiring のみで自動実行では選ばない（claude-in-claude 回避）。
+
+**安全境界（重要）**: 候補は untrusted コードとして実行される。AST 検査はセキュリティ境界ではない
+（sandbox.py 参照）。**信頼できない候補を流す場合は OS 分離（seccomp/namespace/k8s）の中で実行すること。**
+このローカル実行に OS サンドボックスは無い。
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from budget import ConfirmBudget
+from builder import BuilderDir, make_builder
+from kb import KnowledgeBase
+from loop import _CONFIRM_SEEDS, run_one_cycle
+from review import Judge, make_reviewers
+from sandbox import DEDUPE_TASK, Task
+
+DEFAULT_KB = str(Path(__file__).resolve().parent / "kb.sqlite")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="self-improvement loop (gate + reviewers + judge + diversity + confirm + budget)")
+    ap.add_argument("--builder", choices=["mock", "cli-run"], default="mock")
+    ap.add_argument("--reviewers", choices=["mock", "cli-run"], default="mock")
+    ap.add_argument("--candidates-dir", default=None,
+                    help="実候補ファイル(<module>.py 群)のディレクトリ。指定すると builder より優先（BuilderDir）")
+    ap.add_argument("--target-dir", default=None,
+                    help="改善対象 dir（<module>.py / test_<module>.py / bench.py）。省略時は同梱 dedupe")
+    ap.add_argument("--module", default="dedupe")
+    ap.add_argument("--symbol", default="dedupe_preserve_order")
+    ap.add_argument("--primary", default="latency", help="主要 KPI 名（bench は lower-better サンプル列を返す前提）")
+    ap.add_argument("--higher-is-better", action="store_true", help="主要 KPI が高いほど良い場合")
+    ap.add_argument("--baseline-params", default="items",
+                    help="baseline 関数の引数名（カンマ区切り）。scope reviewer の契約判定用")
+    ap.add_argument("--reps", type=int, default=31)
+    ap.add_argument("--slate-size", type=int, default=0, help="0=全候補（BuilderDir）。mock は固定 slate")
+    ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--confirm-budget", type=int, default=3,
+                    help="confirm holdout 1 slice あたりの query 上限（KB 永続）")
+    ap.add_argument("--cycles", type=int, default=3, help="実候補一括採否なら 1 を推奨")
+    ap.add_argument("--kb-path", default=DEFAULT_KB)
+    a = ap.parse_args()
+
+    # task: --target-dir を渡せば任意ターゲット。省略時は同梱 dedupe（後方互換）。
+    if a.target_dir:
+        bparams = tuple(p.strip() for p in a.baseline_params.split(",") if p.strip())
+        task = Task(target_dir=Path(a.target_dir), module=a.module, symbol=a.symbol,
+                    primary=a.primary, higher_is_better=a.higher_is_better, reps=a.reps,
+                    baseline_params=bparams)
+    else:
+        task = DEDUPE_TASK
+
+    # builder: --candidates-dir があれば実候補(BuilderDir)、無ければ mock/cli-run（デモ）。
+    if a.candidates_dir:
+        builder = BuilderDir(a.candidates_dir)
+        builder_label = f"dir:{a.candidates_dir}"
+    else:
+        builder = make_builder(a.builder, temperature=a.temperature)
+        builder_label = a.builder
+
+    reviewers = make_reviewers(a.reviewers, task.symbol, task.baseline_params)
+    judge = Judge()
+    kb = KnowledgeBase(a.kb_path)
+    confirm_budget = ConfirmBudget(kb, _CONFIRM_SEEDS, a.confirm_budget)
+    slate_size = None if a.slate_size == 0 else a.slate_size
+
+    print(f"builder={builder_label} reviewers={a.reviewers} "
+          f"target={task.module}:{task.symbol} primary={task.primary} "
+          f"cycles={a.cycles} confirm_budget={a.confirm_budget}/slice kb={a.kb_path}")
+    print(f"証明: 採否は実テスト + 実ベンチ ({task.primary} の有意差) が床。Reviewer/Judge は必要条件。"
+          f"複数提案は Bonferroni 補正し最良を選び fresh confirm slice で再確証。query-budget 枯渇で停止。\n")
+
+    adopted_count = 0
+    for cycle in range(1, a.cycles + 1):
+        out = run_one_cycle(builder, reviewers, judge, kb, cycle, slate_size,
+                            confirm_budget, task)
+        print(f"[cycle {out.cycle}] slate={out.slate_size}候補  "
+              f"search alpha: 0.05 -> {out.alpha_corrected:.4g} (Bonferroni /{out.slate_size})")
+        for r in out.results:
+            d = r.detail.get(task.primary, {})
+            mark = "★" if r.name == out.winner else " "
+            print(f"  {mark} {r.name:16s} {r.status:12s} "
+                  f"tests={r.tests_passed} rel={d.get('rel')} p={d.get('p')} "
+                  f"significant={d.get('significant')}")
+            for rv in r.reviews:
+                if rv.blocking:
+                    print(f"        review[{rv.role}] BLOCK :: {'; '.join(rv.blocking)}")
+            if not r.adopt:
+                print(f"        理由: {', '.join(r.reasons)}")
+        # confirm: winner を query-budget 内の fresh slice で再確証（枯渇なら confirm 不可）
+        if out.winner is not None:
+            if out.exhausted:
+                print(f"  confirm[{out.winner}]: query-budget 枯渇 → confirm 不可（要 fresh data）")
+            else:
+                cd = out.confirm_detail.get(task.primary, {})
+                print(f"  confirm[{out.winner}] slice seed={out.confirm_seed}: "
+                      f"rel={cd.get('rel')} p={cd.get('p')} "
+                      f"significant={cd.get('significant')} -> confirmed={out.confirmed}")
+            if not out.confirmed:
+                print(f"        理由: {', '.join(out.confirm_reasons)}")
+        # 最終採否（= search 最良選択 AND confirm 再現）
+        if out.adopted:
+            print(f"  => 採用: {out.winner}（search 最良 → confirm 再現）")
+            adopted_count += 1
+        elif out.exhausted:
+            print(f"  => 不採用（{out.winner} は holdout 枯渇で確証できず）")
+        elif out.winner is not None:
+            print(f"  => 不採用（{out.winner} は search 通過も confirm で再現せず）")
+        else:
+            print("  => 不採用（valid な候補なし）")
+        print()
+
+    print(f"=== {adopted_count}/{a.cycles} サイクルで採用 ===")
+    print("confirm holdout 予算（KB 永続）:")
+    for h in confirm_budget.status():
+        flag = " (枯渇)" if h["exhausted"] else ""
+        print(f"   seed={h['seed']} {h['spent']}/{h['budget']}{flag}")
+    print("KB 最新:")
+    for row in kb.recent(limit=20):
+        print("  ", row)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

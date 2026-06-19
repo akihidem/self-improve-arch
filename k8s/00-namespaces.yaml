@@ -1,0 +1,10 @@
+# prod は AI が RBAC を持たない別 namespace（理想は別クラスタ）。
+apiVersion: v1
+kind: Namespace
+metadata: { name: platform }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox
+  labels: { purpose: ai-experiments }
