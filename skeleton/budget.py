@@ -8,7 +8,8 @@ fresh confirm slice を毎サイクル同じ seed で叩き続けると longitud
 
 honest: この装置は情報を増やさない。holdout 枯渇を **silent な overfit から loud な停止へ
 変える**だけ。本当の床は genuinely fresh な外部データ源（有限・非定常）で、Thresholdout
-（DP 的再利用）もその先に privacy-budget の天井を持つ。連続自己改善の内部測定の天井は残る。
+（DP 的再利用・`thresholdout.py` に実装。`--confirm-policy thresholdout`）もその先に
+privacy-budget の天井を持つ。連続自己改善の内部測定の天井は残る。
 """
 from __future__ import annotations
 

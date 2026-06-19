@@ -48,6 +48,7 @@ from loop import _CONFIRM_SEEDS, run_one_cycle
 from promote import PROMOTE_MODES, promote_winner
 from review import Judge, make_reviewers
 from sandbox import DEDUPE_TASK, Task, infer_baseline_params
+from thresholdout import Thresholdout
 
 DEFAULT_KB = str(Path(__file__).resolve().parent / "kb.sqlite")
 
@@ -82,6 +83,13 @@ def main() -> int:
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--confirm-budget", type=int, default=3,
                     help="confirm holdout 1 slice あたりの query 上限（KB 永続）")
+    ap.add_argument("--confirm-policy", choices=["budget", "thresholdout"], default="budget",
+                    help="confirm holdout の再利用ポリシー。budget=slice rotation（既定・KB永続）/ "
+                         "thresholdout=DP 的再利用（search と一致するクエリは holdout 温存・乖離時のみ消費）")
+    ap.add_argument("--thresholdout-budget", type=int, default=8,
+                    help="thresholdout の privacy budget（開示=乖離クエリの上限）")
+    ap.add_argument("--threshold", type=float, default=0.15, help="thresholdout の一致許容幅（rel 差）")
+    ap.add_argument("--sigma", type=float, default=0.05, help="thresholdout の Laplace ノイズ尺度")
     ap.add_argument("--cycles", type=int, default=3, help="実候補一括採否なら 1 を推奨")
     ap.add_argument("--kb-path", default=DEFAULT_KB)
     ap.add_argument("--apply", choices=list(PROMOTE_MODES), default="staging",
@@ -118,6 +126,8 @@ def main() -> int:
     judge = Judge()
     kb = KnowledgeBase(a.kb_path)
     confirm_budget = ConfirmBudget(kb, _CONFIRM_SEEDS, a.confirm_budget)
+    thresholdout = (Thresholdout(threshold=a.threshold, sigma=a.sigma, budget=a.thresholdout_budget)
+                    if a.confirm_policy == "thresholdout" else None)
     slate_size = None if a.slate_size == 0 else a.slate_size
 
     print(f"builder={builder_label} reviewers={a.reviewers} "
@@ -131,7 +141,7 @@ def main() -> int:
     adopted_count = 0
     for cycle in range(1, a.cycles + 1):
         out = run_one_cycle(builder, reviewers, judge, kb, cycle, slate_size,
-                            confirm_budget, task)
+                            confirm_budget, task, thresholdout=thresholdout)
         print(f"[cycle {out.cycle}] slate={out.slate_size}候補  "
               f"search alpha: 0.05 -> {out.alpha_corrected:.4g} (Bonferroni /{out.slate_size})")
         for r in out.results:

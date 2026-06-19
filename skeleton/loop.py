@@ -186,7 +186,8 @@ def confirm_winner(candidate, judge_approved: bool,
 def run_one_cycle(builder, reviewers: list, judge, kb: KnowledgeBase,
                   cycle: int, slate_size: int = 3,
                   confirm_budget: ConfirmBudget | None = None,
-                  task: Task = DEDUPE_TASK) -> CycleOutcome:
+                  task: Task = DEDUPE_TASK,
+                  thresholdout=None) -> CycleOutcome:
     if confirm_budget is None:
         confirm_budget = ConfirmBudget(kb, _CONFIRM_SEEDS, _CONFIRM_BUDGET)
     slate = builder.slate_for_cycle(cycle, slate_size)
@@ -204,17 +205,33 @@ def run_one_cycle(builder, reviewers: list, judge, kb: KnowledgeBase,
     confirm_seed: int | None = None
     exhausted = False
     if sel is not None:
-        confirm_seed = confirm_budget.spend()
-        if confirm_seed is None:
-            exhausted = True
-            confirm_reasons = ["confirm holdout 枯渇（query-budget 使い切り・要 fresh data）"]
-        else:
-            winner_cand = next(c for c in slate if c.name == sel.name)
+        winner_cand = next(c for c in slate if c.name == sel.name)
+        if thresholdout is not None:
+            # Thresholdout: 固定 confirm slice を再利用。search と一致するクエリは privacy
+            # budget を消費しない＝holdout 延命。乖離（過学習シグナル）時のみ消費し holdout 判定。
             cr = confirm_winner(winner_cand, sel.judge_approved,
-                                confirm_seed=confirm_seed, task=task)
-            confirmed = cr.confirmed
+                                confirm_seed=_CONFIRM_SEED, task=task)
+            tv = thresholdout.assess_auto(
+                sel.primary_rel, cr.detail.get(task.primary, {}).get("rel", 0.0))
+            confirm_seed = _CONFIRM_SEED
             confirm_detail = cr.detail
-            confirm_reasons = cr.reasons
+            if tv.exhausted:
+                exhausted = True
+                confirm_reasons = ["thresholdout privacy budget 枯渇（要 fresh data）", tv.note]
+            else:
+                confirmed = cr.confirmed if tv.used_holdout else True
+                confirm_reasons = cr.reasons + [tv.note]
+        else:
+            confirm_seed = confirm_budget.spend()
+            if confirm_seed is None:
+                exhausted = True
+                confirm_reasons = ["confirm holdout 枯渇（query-budget 使い切り・要 fresh data）"]
+            else:
+                cr = confirm_winner(winner_cand, sel.judge_approved,
+                                    confirm_seed=confirm_seed, task=task)
+                confirmed = cr.confirmed
+                confirm_detail = cr.detail
+                confirm_reasons = cr.reasons
 
     adopted = sel is not None and confirmed
     # 採用時のみ勝者ソースを取り出す（promote.py が baseline へ昇格＝ループを閉じる）。
