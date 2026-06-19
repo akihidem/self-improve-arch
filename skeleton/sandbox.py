@@ -81,6 +81,8 @@ class Task:
     higher_is_better: bool = False
     reps: int = 31
     baseline_params: tuple = ("items",)   # baseline 関数の引数名（scope reviewer の契約判定用）
+    python_exe: str = ""                   # テスト/ベンチ subprocess の python（空=sys.executable）。venv 指定用
+    allowed_imports: tuple = ("__future__",)  # 候補に許可する import の top-module（信頼候補で numpy 等を許可）
 
 
 # 既定タスク = 同梱の dedupe（後方互換: task 省略時はこれ）。
@@ -91,14 +93,34 @@ class CandidateRejected(Exception):
     """候補が AST 整合性検査に失格した（採否以前に計測対象から除外）。"""
 
 
-def vet_candidate_source(source: str, required_func: str = REQUIRED_FUNC) -> None:
+def _is_literal(node) -> bool:
+    """モジュール直下の定数代入として許す値か（定数 / 単項符号付き定数 / 定数のみのリテラル集合）。"""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _is_literal(k) and _is_literal(v)
+                   for k, v in zip(node.keys, node.values))
+    return False
+
+
+def vet_candidate_source(source: str, required_func: str = REQUIRED_FUNC,
+                         allowed_imports=_ALLOWED_IMPORT_MODULES) -> None:
     """候補ソースを AST 検査し、明白に危険な構文を早期棄却する（境界ではない・docstring 参照）。
 
-    許可: モジュールに `from __future__ import ...`、docstring、そして
-          required_func を定義する関数定義のみ。
-    拒否: その他のモジュール文（代入・任意 import・式文での副作用）、
-          禁止名（time/perf_counter/sys/builtins/eval/exec ...）の参照。
+    許可: `from <allowed> import ...` / `import <allowed>`（allowed_imports の top-module。
+          既定は __future__ のみ。信頼候補には numpy/scipy 等を渡せる）、docstring、
+          モジュール直下の**定数代入**（`_K = 5` 等の設定定数）、required_func を定義する関数定義。
+    拒否: 上記以外のモジュール文（副作用ある式文・非定数代入）、禁止名（time/os/eval ...）の参照。
     """
+    allowed = frozenset(allowed_imports)
+
+    def _import_ok(names):
+        return all(n.split(".")[0] in allowed for n in names)
+
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
@@ -110,15 +132,22 @@ def vet_candidate_source(source: str, required_func: str = REQUIRED_FUNC) -> Non
             defined_funcs.add(node.name)
             continue
         if isinstance(node, ast.ImportFrom):
-            if node.module not in _ALLOWED_IMPORT_MODULES:
+            if (node.module or "").split(".")[0] not in allowed:
                 raise CandidateRejected(
                     f"モジュール先頭 import 不許可: from {node.module} import ..."
                 )
             continue
         if isinstance(node, ast.Import):
-            raise CandidateRejected("モジュール先頭 import 不許可: import 文")
-        # module docstring（定数式文）だけは許す。それ以外の式文・代入は拒否。
+            names = [a.name for a in node.names]
+            if not _import_ok(names):
+                raise CandidateRejected(f"モジュール先頭 import 不許可: {names}")
+            continue
+        # module docstring（定数式文）
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            continue
+        # モジュール直下の定数代入（設定定数）だけ許す。呼び出し・名前束縛は拒否。
+        if isinstance(node, ast.Assign) and \
+                all(isinstance(t, ast.Name) for t in node.targets) and _is_literal(node.value):
             continue
         raise CandidateRejected(
             f"関数定義以外のモジュール文を含む候補は不許可: {type(node).__name__}"
@@ -133,12 +162,14 @@ def vet_candidate_source(source: str, required_func: str = REQUIRED_FUNC) -> Non
             raise CandidateRejected(f"禁止名の参照: {node.id}")
         if isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_NAMES:
             raise CandidateRejected(f"禁止属性のアクセス: .{node.attr}")
-        # 関数内 import も計測器/プロセスへの入口になりうるため拒否。
+        # import は allowed_imports の top-module のみ許可（それ以外は計測器/プロセスへの入口）。
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            mod = getattr(node, "module", None)
-            names = [a.name for a in node.names]
-            if isinstance(node, ast.Import) or mod not in _ALLOWED_IMPORT_MODULES:
-                raise CandidateRejected(f"候補内 import 不許可: {mod or names}")
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+                if not _import_ok(names):
+                    raise CandidateRejected(f"候補内 import 不許可: {names}")
+            elif (node.module or "").split(".")[0] not in allowed:
+                raise CandidateRejected(f"候補内 import 不許可: {node.module}")
 
 
 @dataclass
@@ -182,7 +213,8 @@ print(_dumps([bt, ct]))
 def _run_bench_interleaved(work_dir: Path, base_impl: Path,
                            cand_impl: Path, reps: int,
                            seed: int = 1234,
-                           symbol: str = "dedupe_preserve_order") -> tuple[list, list]:
+                           symbol: str = "dedupe_preserve_order",
+                           python_exe: str = "") -> tuple[list, list]:
     """同一プロセス内で baseline/candidate を交互計測し (base_timings, cand_timings)。
 
     work_dir は bench.py を import できるディレクトリ（baseline のコピーで可）。
@@ -193,7 +225,7 @@ def _run_bench_interleaved(work_dir: Path, base_impl: Path,
         base=str(base_impl), cand=str(cand_impl), reps=reps, seed=seed, symbol=symbol
     )
     proc = subprocess.run(
-        [sys.executable, "-c", code],
+        [python_exe or sys.executable, "-c", code],
         cwd=str(work_dir), capture_output=True, text=True, timeout=300,
     )
     if proc.returncode != 0:
@@ -202,10 +234,11 @@ def _run_bench_interleaved(work_dir: Path, base_impl: Path,
     return base_t, cand_t
 
 
-def _run_tests(work_dir: Path, test_file: str = "test_dedupe.py") -> tuple[bool, str]:
-    """work_dir 内で pytest を実行。(passed, output 末尾) を返す。"""
+def _run_tests(work_dir: Path, test_file: str = "test_dedupe.py",
+               python_exe: str = "") -> tuple[bool, str]:
+    """work_dir 内で pytest を実行。(passed, output 末尾) を返す。python_exe 空なら sys.executable。"""
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", test_file],
+        [python_exe or sys.executable, "-m", "pytest", "-q", test_file],
         cwd=str(work_dir), capture_output=True, text=True, timeout=300,
     )
     out = (proc.stdout + proc.stderr)[-1200:]
@@ -218,6 +251,24 @@ def _zero_metric() -> Metric:
         name="latency", baseline_mean=1.0, baseline_std=0.0,
         candidate_mean=1.0, candidate_std=0.0, n=1, higher_is_better=False,
     )
+
+
+def infer_baseline_params(task: Task) -> tuple:
+    """baseline 実装（<target_dir>/<module>.py）の symbol 関数の引数名を返す（scope reviewer の契約判定用）。
+
+    --baseline-params を毎回手で渡さずに済むよう、baseline のシグネチャから自動推論する。
+    見つからなければ () を返す。
+    """
+    impl = Path(task.target_dir) / f"{task.module}.py"
+    try:
+        tree = ast.parse(impl.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return ()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == task.symbol:
+            a = node.args
+            return tuple(x.arg for x in (list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs)))
+    return ()
 
 
 def evaluate_candidate(candidate_source: str, task: Task = DEDUPE_TASK, *,
@@ -238,7 +289,7 @@ def evaluate_candidate(candidate_source: str, task: Task = DEDUPE_TASK, *,
 
     # --- gate-integrity: untrusted な候補ソースをまず AST 検査（境界ではない・docstring 参照）---
     try:
-        vet_candidate_source(candidate_source, task.symbol)
+        vet_candidate_source(candidate_source, task.symbol, task.allowed_imports)
     except CandidateRejected as e:
         return SandboxResult(
             tests_passed=False, latency=_zero_metric(),
@@ -257,12 +308,12 @@ def evaluate_candidate(candidate_source: str, task: Task = DEDUPE_TASK, *,
         (cand_dir / impl_name).write_text(candidate_source, encoding="utf-8")
 
         # --- 実テスト（候補に対して）---
-        tests_passed, test_out = _run_tests(cand_dir, test_name)
+        tests_passed, test_out = _run_tests(cand_dir, test_name, task.python_exe)
 
         # --- 実ベンチ（同一プロセスで baseline/candidate を交互計測）---
         base_t, cand_t = _run_bench_interleaved(
             base_dir, base_dir / impl_name, cand_dir / impl_name, reps,
-            seed=workload_seed, symbol=task.symbol,
+            seed=workload_seed, symbol=task.symbol, python_exe=task.python_exe,
         )
 
         # bench 出力長を reps と照合（N 偽装の遮断）。len 不一致は捏造/破損として棄却し、

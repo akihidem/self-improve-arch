@@ -86,8 +86,8 @@ def measure_interleaved(base_fn, cand_fn, data, reps=31):
 （ファイル名が候補名になる）。出どころは手書き・別ツール・別途 LLM 出力・過去案、何でも可。
 実例: `examples/first_unique_candidates/`（`correct_fast.py` / `wrong.py` / `noop.py`）。
 
-> 候補が書ける構文には制限があります（計測器・任意 import・モジュール文を禁止）。
-> 弾かれたら §5「AST で弾かれた」を参照。
+> 候補が書ける構文には制限があります（未許可 import・副作用文を禁止／関数定義・定数はOK）。
+> numpy 等が要るなら §2-4、弾かれたら §5「AST で弾かれた」を参照。
 
 ### 2-3. 実行する
 
@@ -105,6 +105,22 @@ python3 run.py \
 > 「候補を一括で 1 回採否したい」なら `--cycles 1`。`--cycles N` は同じ候補群を N 回まわします
 > （confirm 用 query-budget を N 回消費）。
 
+### 2-4. 数値コード（numpy / scipy など・venv 依存）の場合
+
+依存が venv にある／候補が numpy・scipy を使う場合は 2 フラグを足すだけ:
+
+```bash
+V=path/to/.venv/bin/python          # 依存(numpy/scipy)の入った python
+$V run.py --target-dir mytarget --module mymod --symbol myfn \
+  --python "$V" \
+  --allow-imports numpy,scipy \
+  --candidates-dir mycands --cycles 1 --kb-path /tmp/kb.sqlite
+```
+
+- `--python`: テスト/ベンチの subprocess をこの python で実行（venv の依存を解決）。
+- `--allow-imports`: 候補に許す import の top-module（`numpy.linalg` は `numpy` でOK）。**候補を更に信頼する操作**なので信頼できる候補にのみ使う。
+- `--baseline-params` は通常**不要**（baseline のシグネチャから自動推論）。`K = 5` 等のモジュール直下の定数も候補に書ける。
+
 ---
 
 ## 3. コマンド・オプション一覧
@@ -116,7 +132,9 @@ python3 run.py \
 | `--symbol FN` | `dedupe_preserve_order` | 改善対象の関数名 |
 | `--primary KPI` | `latency` | 主要 KPI の名前（表示・記録用） |
 | `--higher-is-better` | （off=lower） | KPI が高いほど良いとき付ける |
-| `--baseline-params a,b` | `items` | baseline 関数の引数名（scope レビューの契約判定用） |
+| `--baseline-params a,b` | （自動推論） | baseline 関数の引数名。省略で baseline シグネチャから推論 |
+| `--python PATH` | （実行中の python） | テスト/ベンチ subprocess の python。venv 指定で依存(numpy等)解決 |
+| `--allow-imports a,b` | `__future__` のみ | 候補に許す import の top-module（例 `numpy,scipy`）。**信頼候補のみ** |
 | `--reps N` | `31` | 1 候補あたりの計測 rep 数 |
 | `--candidates-dir DIR` | （なし） | 実候補ファイル群。指定すると builder より優先（BuilderDir） |
 | `--builder mock\|cli-run` | `mock` | デモ用 builder（candidates-dir 未指定時）。cli-run は自動起動しない |
@@ -157,13 +175,15 @@ python3 run.py \
 - **ベンチが遅い / テストに時間がかかる**: `make_workload` の `size` を下げる、`--reps` を下げる。
 - **`significant=False` ばかり（差が出ない）**: workload が小さすぎ。baseline と候補で**明確に差が出る**
   大きさ・性質にする。効果量が小さいと `big_enough`（既定 5%）未満で不採用になります。
-- **AST で弾かれた（候補が REJECT 前に rejected）**: 候補に書けるのは
-  `from __future__ import ...`・docstring・**関数定義だけ**。`import`・モジュール直下の代入・
-  `time`/`os`/`eval` などの危険名は禁止（計測捏造の早期遮断のため）。純粋な実装だけにしてください。
+- **AST で弾かれた（候補が REJECT 前に rejected）**: 候補に書けるのは docstring・**モジュール直下の
+  定数代入**・許可された import（既定 `from __future__` のみ。`--allow-imports` で追加）・関数定義。
+  禁止: 副作用ある式文・非定数代入・未許可 import・`time`/`os`/`eval` 等の危険名（計測捏造の早期遮断）。
 - **「`<symbol>` が見つからない」**: 候補ファイルが `--symbol` の関数を定義していない、または
   `--symbol` 名が違う。
-- **候補が全部 veto される（別ターゲット）**: `--baseline-params` を baseline の引数名に合わせる
-  （例: `--baseline-params a,b`）。
+- **候補が全部 veto される（別ターゲット）**: 通常は `--baseline-params` 自動推論で起きないが、
+  baseline と候補の引数名が食い違うと起きる。`--baseline-params a,b` で明示できる。
+- **候補が numpy/scipy で弾かれる / 依存が無い**: `--allow-imports numpy,scipy` と、依存の入った
+  venv を `--python path/to/.venv/bin/python` で指定（§2-4）。
 
 ---
 
