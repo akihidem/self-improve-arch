@@ -1,0 +1,53 @@
+# self-improve ループの ServiceAccount と最小権限 Role。
+#
+# 設計の核心: 「AI は本番を直接変更しない」を**規約でなく構造で強制**する（RSI-LIMITS の
+# Ring2 = 人間ゲートを K8s RBAC で実体化）。この SA は:
+#   - staging namespace の ConfigMap/成果物の read と、staging-* の write のみ。
+#   - **prod namespace へのアクセス権を一切持たない**（ClusterRole も付与しない）。
+#   - prod への反映は別経路（branch protection + 人間レビュー + CI）でのみ行う。
+# したがってループがどれだけ自律的に回っても、prod を自分で書き換えることは
+# 権限的に不可能（= 構造的な床）。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: self-improve
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: self-improve-loop
+  namespace: self-improve
+automountServiceAccountToken: false   # 既定では token を mount しない（候補コードから触らせない）
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: loop-staging
+  namespace: self-improve
+rules:
+  # 候補・設定の読み取り（入力）。
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  # staging 成果物の書き込み（出力）。prod 名や他 namespace は対象外。
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["staging-promotion"]
+    verbs: ["create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: loop-staging-binding
+  namespace: self-improve
+subjects:
+  - kind: ServiceAccount
+    name: self-improve-loop
+    namespace: self-improve
+roleRef:
+  kind: Role
+  name: loop-staging
+  apiGroup: rbac.authorization.k8s.io
+# 注意: prod namespace 用の Role/RoleBinding は**意図的に存在しない**。
+# prod への書込権を持つ SA をこのループに紐付けてはならない（人間ゲートの破壊）。

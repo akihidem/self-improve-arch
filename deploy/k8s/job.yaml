@@ -1,0 +1,73 @@
+# self-improve ループを 1 サイクル回す Job（本番形）。
+#
+# このループ Pod 自体が OS 分離境界:
+#   - runAsNonRoot / readOnlyRootFilesystem / drop ALL caps / no privilege escalation /
+#     seccomp RuntimeDefault ＝ 候補が escalation できない。
+#   - loop-deny-all NetworkPolicy（app=self-improve-loop ラベルで選択）で network 遮断
+#     ＝候補が exfiltration できない。
+#   - resources.limits ＝ Pod 全体の DoS 上限。Pod 内の per-候補 DoS は `--isolation rlimit`。
+#   - 制限 SA（self-improve-loop）で prod 書込権なし＝採用は staging 成果物まで（人間ゲート）。
+#
+# 入力: 候補/設定は ConfigMap mount（network 不要）。出力: staging は emptyDir/PVC へ。
+# prod 反映はこの Job の外（branch protection + CI + 人間レビュー）。
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: self-improve-cycle
+  namespace: self-improve
+spec:
+  backoffLimit: 0            # 失敗を握りつぶさない（リトライで silent 化しない）
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: self-improve-loop   # ← loop-deny-all NetworkPolicy が選択
+    spec:
+      serviceAccountName: self-improve-loop
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534          # nobody
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loop
+          image: ghcr.io/akihidem/self-improve-arch:latest   # python + pytest + 対象依存を含む image
+          imagePullPolicy: IfNotPresent
+          command: ["python", "run.py"]
+          args:
+            - "--candidates-dir=/in/candidates"
+            - "--target-dir=/in/target"
+            - "--isolation=rlimit"     # Pod が network/権限境界、rlimit が Pod 内 per-候補 DoS 床
+            - "--confirm-policy=thresholdout"
+            - "--cycles=1"
+            - "--apply=staging"        # prod 直書きしない（人間/CI が staging を昇格）
+            - "--kb-path=/out/kb.sqlite"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - { name: candidates, mountPath: /in, readOnly: true }
+            - { name: staging, mountPath: /out }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: candidates
+          configMap:
+            name: self-improve-input    # 候補(<module>.py 群) + target を投入
+        - name: staging
+          emptyDir: {}                  # 成果物。永続するなら PVC に差し替え
+        - name: tmp
+          emptyDir: {}                  # readOnlyRootFilesystem 下の作業域

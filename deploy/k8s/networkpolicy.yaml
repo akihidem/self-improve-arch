@@ -1,0 +1,28 @@
+# self-improve ループ Pod の network を全遮断する。
+#
+# 候補は untrusted コードとして実行される。AST vet は安全境界でなく、本物の床は OS/network
+# 分離（isolation.py 参照）。K8s ではこの NetworkPolicy が `--isolation docker --network none`
+# 相当の**network 境界**を担う＝候補が計測捏造に成功しても exfiltration できない。
+#
+# 入出力は network を使わない: 候補/設定は ConfigMap mount（入力）、staging 成果物は
+# PVC/emptyDir（出力）。prod 反映は人間ゲート（branch protection + CI）経由なので、
+# ループ Pod に egress は不要。DNS すら閉じる。
+#
+# 前提: CNI が NetworkPolicy を強制すること（Calico/Cilium 等）。素の kindnet 等では
+# 強制されない場合がある＝その場合は network 境界が無いので docker/別 CNI を使うこと。
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loop-deny-all
+  namespace: self-improve
+spec:
+  podSelector:
+    matchLabels:
+      app: self-improve-loop
+  policyTypes:
+    - Ingress
+    - Egress
+  # ingress/egress どちらも rule を空にする = 全遮断（allow-list が空）。
+  ingress: []
+  egress: []

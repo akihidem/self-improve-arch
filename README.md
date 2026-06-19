@@ -32,5 +32,8 @@
 
 —
 
-設計記録 + 動く実装（`skeleton/`）。候補実行の **OS 分離（`--isolation`）** と **実 LLM builder/reviewer の cli-run 実走** は実装・実証済み。
+設計記録 + 動く実装（`skeleton/`）+ 本番デプロイ（`deploy/`）。**OS 分離（`--isolation`）** /
+**confirm holdout の Thresholdout 再利用（`--confirm-policy thresholdout`）** / **実 LLM builder/reviewer の
+cli-run 実走** / **K8s で人間ゲートを構造強制（`deploy/DEPLOY.md`：RBAC で prod 書込権なし + NetworkPolicy
+で network 遮断）** をすべて実装・実証済み。
 **信頼できない候補は `--isolation docker`（`--network none`）の中で**実行する（docker 不可なら外側の OS/コンテナ分離。rlimit/systemd は資源上限のみで network 非隔離。`docs/USAGE.md` 安全境界）。
