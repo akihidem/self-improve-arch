@@ -135,7 +135,9 @@ class BuilderMock:
 
 
 class BuilderCliRun:
-    """claude-cli-run 経由の実 Builder（wiring のみ。この workflow では実走しない）。
+    """claude-cli-run 経由の実 Builder。**任意ターゲット対応**: task を渡すと
+    `<module>.py` の baseline ソースを見せ、`<symbol>` の挙動・シグネチャを保ったまま
+    KPI を改善する候補を slate_size 個生成する（task 無しは dedupe デモに後方互換 fallback）。
 
     I/F は ~/.claude/scripts/claude-cli-run.py を確認済み:
       - usage: claude-cli-run [opts] "PROMPT"  (positional prompt or stdin)
@@ -145,8 +147,9 @@ class BuilderCliRun:
     不在/失敗は明示 raise（黙って mock に fallback しない）。
     """
 
-    def __init__(self, script_path: str | None = None, model: str | None = None,
+    def __init__(self, task=None, script_path: str | None = None, model: str | None = None,
                  timeout: int = 300, temperature: float = 0.7):
+        self.task = task                 # Task（module/symbol/primary/baseline_params/target_dir）。
         self.script_path = script_path or str(
             Path.home() / ".claude" / "scripts" / "claude-cli-run.py"
         )
@@ -154,23 +157,62 @@ class BuilderCliRun:
         self.timeout = timeout
         self.temperature = temperature   # slate の多様性ノブ（LLM 経路のみ意味を持つ）
 
+    def _baseline_source(self) -> str | None:
+        """task.target_dir/<module>.py（現 baseline）を読む。候補に最適化させる元実装。"""
+        if self.task is None:
+            return None
+        p = Path(self.task.target_dir) / f"{self.task.module}.py"
+        try:
+            return p.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
     def slate_for_cycle(self, cycle: int, slate_size: int = 3,
                         temperature: float | None = None) -> list:
         """temperature 付きで slate_size 個の多様な候補を集める（wiring のみ）。"""
         temp = self.temperature if temperature is None else temperature
         return [self._one_candidate(i, slate_size, temp) for i in range(slate_size)]
 
+    # slate の多様性ヒント（idx で巡回）。任意ターゲットで効く汎用の切り口。
+    _HINTS = (
+        "計算量そのものを下げる（O(n^2)→O(n) 等）",
+        "データ構造を変える（dict/set/heap/deque 等）",
+        "不要な確保・コピー・スライス・再走査を省く",
+        "累積/incremental に保持して窓やループの再計算を避ける",
+        "境界条件と出力を完全に保ったまま内側ループを薄くする",
+    )
+
     def _build_prompt(self, idx: int, slate_size: int, temperature: float) -> str:
+        hint = self._HINTS[idx % len(self._HINTS)]
+        if self.task is None:
+            # 後方互換: task 無しは同梱 dedupe デモ用の固定プロンプト。
+            return (
+                "あなたは Python の最適化担当です。次の関数 dedupe_preserve_order は "
+                "出現順を保って重複除去しますが O(n^2) で遅い実装です。\n"
+                "正しさ（順序保持・重複除去・空・全重複・hashable 前提・入力を破壊しない）を "
+                "維持したままより速い実装を提案してください。\n"
+                f"これは多様な {slate_size} 案中の {idx + 1} 案目（temperature≈{temperature}）。"
+                f"アプローチのヒント: {hint}。他案と異なる切り口で。\n"
+                "回答は厳密に次の JSON のみ（コードフェンス無し）:\n"
+                '{"name": "<短い識別子>", "source": "<dedupe.py の全文。'
+                'dedupe_preserve_order を定義すること>"}'
+            )
+        # 任意ターゲット: baseline ソースを見せ、挙動とシグネチャを保ったまま KPI を改善させる。
+        t = self.task
+        direction = "大きいほど良い（最大化）" if t.higher_is_better else "小さいほど良い（高速化等の最小化）"
+        baseline = self._baseline_source() or "（baseline ソースを取得できませんでした）"
+        params = list(t.baseline_params)
         return (
-            "あなたは Python の最適化担当です。次の関数 dedupe_preserve_order は "
-            "出現順を保って重複除去しますが O(n^2) で遅い実装です。\n"
-            "正しさ（順序保持・重複除去・空・全重複・hashable 前提・入力を破壊しない）を "
-            "維持したままより速い実装を提案してください。\n"
+            f"あなたは Python の最適化担当です。モジュール `{t.module}.py` の関数 `{t.symbol}` を、"
+            f"**公開シグネチャと挙動を完全に保ったまま** KPI「{t.primary}」を改善（{direction}）してください。\n"
+            f"現在の実装（これ全体を置き換える）:\n```python\n{baseline}\n```\n"
+            f"厳守: (1) `test_{t.module}.py` の全テストに通る正しい実装のみ"
+            f"（出力・境界条件・先読み禁止など挙動を完全維持）。(2) 公開引数 {params} を変えない。"
+            f"(3) 追加の import を勝手に増やさない（許可済み以外は使わない）。\n"
             f"これは多様な {slate_size} 案中の {idx + 1} 案目（temperature≈{temperature}）。"
-            "他案と異なるアプローチを取ること。\n"
-            "回答は厳密に次の JSON のみ（コードフェンス無し）:\n"
-            '{"name": "<短い識別子>", "source": "<dedupe.py の全文。'
-            'dedupe_preserve_order を定義すること>"}'
+            f"アプローチのヒント: {hint}。他案と異なる切り口で。\n"
+            "回答は厳密に次の JSON のみ（コードフェンス無し・前後の説明文無し）:\n"
+            f'{{"name": "<短い識別子>", "source": "<{t.module}.py の全文。{t.symbol} を定義すること>"}}'
         )
 
     def _one_candidate(self, idx: int, slate_size: int, temperature: float) -> Candidate:
@@ -229,10 +271,14 @@ class BuilderDir:
         return cands if slate_size is None else cands[:slate_size]
 
 
-def make_builder(kind: str, temperature: float = 0.7):
-    """CLI から builder を選ぶファクトリ。temperature は LLM 経路の多様性ノブ。"""
+def make_builder(kind: str, temperature: float = 0.7, task=None):
+    """CLI から builder を選ぶファクトリ。temperature は多様性ノブ。
+
+    task を渡すと cli-run builder は **任意ターゲット対応**（baseline ソースを見せて
+    その関数を最適化させる）。task 省略時は dedupe デモ用プロンプトに後方互換 fallback。
+    """
     if kind == "mock":
         return BuilderMock()
     if kind == "cli-run":
-        return BuilderCliRun(temperature=temperature)
+        return BuilderCliRun(task=task, temperature=temperature)
     raise ValueError(f"unknown builder: {kind!r}（mock|cli-run）")

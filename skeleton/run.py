@@ -119,7 +119,7 @@ def main() -> int:
         builder = BuilderDir(a.candidates_dir)
         builder_label = f"dir:{a.candidates_dir}"
     else:
-        builder = make_builder(a.builder, temperature=a.temperature)
+        builder = make_builder(a.builder, temperature=a.temperature, task=task)
         builder_label = a.builder
 
     reviewers = make_reviewers(a.reviewers, task.symbol, task.baseline_params)
