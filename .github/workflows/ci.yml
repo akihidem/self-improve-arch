@@ -1,0 +1,37 @@
+name: ci
+
+# skeleton のテスト床を回し、deploy/Dockerfile が build できることを確認する。
+# GitHub Actions の ubuntu-latest は docker が在るので、ローカル（WSL で daemon 不可）では
+# skip していた isolation の **docker backend テスト（--network none の network 遮断実証）**も
+# ここで実走する。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install pytest
+        run: pip install --no-cache-dir pytest
+
+      - name: skeleton test suite（docker 在る CI なので isolation の docker テストも走る）
+        working-directory: skeleton
+        run: python -m pytest -q -rs
+
+      - name: deploy/Dockerfile が build できること
+        run: docker build -t self-improve-arch:ci -f deploy/Dockerfile .
+
+      - name: image が起動して --help を返すこと（スモーク）
+        run: docker run --rm --network none self-improve-arch:ci --help
